@@ -1,0 +1,447 @@
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+let _getDestination;
+let _executeHttpRequest;
+
+const SAP_ODATA_V2_PREFIX = '/sap/opu/odata/sap';
+const OLD_NOTIFICATION_PREFIX = '/api_maintnotification/srvd_a2x/sap/maintenancenotification/0001';
+const ON_PREM_SERVICE_PREFIXES = [
+  '/API_MAINTENANCEORDER',
+  '/API_MAINTNOTIFICATION',
+  '/API_EQUIPMENT',
+  '/API_MATERIAL_STOCK_SRV',
+  '/API_SUPPLIERINVOICE_PROCESS_SRV',
+  '/API_MANAGE_WORKFORCE_TIMESHEET',
+  '/API_SERVICE_REQUEST_SRV'
+];
+
+const root = path.join(__dirname, '..', '..');
+const catalog = JSON.parse(fs.readFileSync(path.join(root, 'config', 'sap-apis.json'), 'utf8'));
+
+function getDestinationSdk() {
+  if (!_getDestination) ({ getDestination: _getDestination } = require('@sap-cloud-sdk/connectivity'));
+  return _getDestination;
+}
+function executeHttpRequestSdk() {
+  if (!_executeHttpRequest) ({ executeHttpRequest: _executeHttpRequest } = require('@sap-cloud-sdk/http-client'));
+  return _executeHttpRequest;
+}
+function destinationName() { return process.env.SAP_DESTINATION || 'ABAP_TOOL_CC'; }
+function requestTimeoutMs() {
+  const value = Number(process.env.SAP_HTTP_TIMEOUT_MS || 45000);
+  return Number.isFinite(value) && value >= 1000 ? value : 45000;
+}
+function isCompatEnabled() { return String(process.env.IGRID_COMPAT_PROXY ?? 'true').toLowerCase() !== 'false'; }
+function metadataPath() { return process.env.SAP_METADATA_PATH || '/sap/opu/odata/sap/API_MAINTENANCEORDER/$metadata'; }
+function dataProbePath() { return process.env.SAP_DATA_PROBE_PATH || '/sap/opu/odata/sap/API_MAINTENANCEORDER/MaintenanceOrder?$format=json&$top=1'; }
+function splitUrl(input) {
+  const value = String(input || '/');
+  const index = value.indexOf('?');
+  return index < 0 ? { pathname: value, query: '' } : { pathname: value.slice(0, index), query: value.slice(index) };
+}
+function rewriteLegacyUrl(originalUrl) {
+  const { pathname, query } = splitUrl(originalUrl);
+  if (pathname === OLD_NOTIFICATION_PREFIX || pathname.startsWith(OLD_NOTIFICATION_PREFIX + '/')) {
+    const suffix = pathname.slice(OLD_NOTIFICATION_PREFIX.length);
+    const base = process.env.SAP_NOTIFICATION_LEGACY_BASE || `${SAP_ODATA_V2_PREFIX}/API_MAINTNOTIFICATION`;
+    return base + suffix + query;
+  }
+  if (ON_PREM_SERVICE_PREFIXES.some(prefix => pathname === prefix || pathname.startsWith(prefix + '/'))) {
+    return SAP_ODATA_V2_PREFIX + pathname + query;
+  }
+  return null;
+}
+function supportedPrefixes() { return [...ON_PREM_SERVICE_PREFIXES, OLD_NOTIFICATION_PREFIX]; }
+function bindingSummary() {
+  let vcap = {};
+  try { vcap = JSON.parse(process.env.VCAP_SERVICES || '{}'); } catch { /* ignore */ }
+  const labels = Object.keys(vcap);
+  const has = name => labels.includes(name);
+  return { xsuaa: has('xsuaa'), destination: has('destination'), connectivity: has('connectivity'), labels };
+}
+function sanitizeDestination(destination) {
+  if (!destination) return null;
+  return {
+    name: destination.name || destinationName(), url: destination.url || null,
+    proxyType: destination.proxyType || null, authentication: destination.authentication || null,
+    sapClient: destination.sapClient || destination.originalProperties?.['sap-client'] || null,
+    locationId: destination.cloudConnectorLocationId || destination.originalProperties?.CloudConnectorLocationId || null
+  };
+}
+async function resolveDestination() {
+  const destination = await getDestinationSdk()({ destinationName: destinationName(), useCache: false });
+  if (!destination) throw Object.assign(new Error(`BTP Destination '${destinationName()}' was not found.`), { statusCode: 502, code: 'DESTINATION_NOT_FOUND' });
+  for (const token of destination.authTokens || []) {
+    if (token?.error) throw Object.assign(new Error(`Destination authentication error: ${token.error}`), { statusCode: 502, code: 'DESTINATION_AUTH_ERROR' });
+  }
+  return destination;
+}
+function forwardWriteHeaders(requestHeaders = {}) {
+  const headers = {};
+  for (const key of ['accept', 'content-type', 'if-match', 'if-none-match', 'sap-contextid-accept', 'prefer']) {
+    if (requestHeaders[key] !== undefined) headers[key] = requestHeaders[key];
+  }
+  return headers;
+}
+async function executeSap(method, targetUrl, requestHeaders = {}, data, options = {}) {
+  const destination = await resolveDestination();
+  const config = {
+    method,
+    url: targetUrl,
+    timeout: requestTimeoutMs(),
+    headers: method === 'GET' ? { Accept: requestHeaders.accept || requestHeaders.Accept || '*/*' } : forwardWriteHeaders(requestHeaders)
+  };
+  if (data !== undefined && data !== null && method !== 'GET' && method !== 'DELETE') config.data = data;
+  const response = await executeHttpRequestSdk()(destination, config, { fetchCsrfToken: method !== 'GET' && method !== 'HEAD' });
+  return { destination, response };
+}
+async function executeSapGet(targetUrl, requestHeaders = {}) { return executeSap('GET', targetUrl, requestHeaders); }
+
+//06-09 read update
+/*
+function ensureJsonFormat(url) {
+  const { pathname, query } = splitUrl(url);
+
+  if (!query) {
+    return `${pathname}?$format=json`;
+  }
+
+  if (/[?&]\$format=/i.test(query)) {
+    return url;
+  }
+
+  return `${pathname}${query}&$format=json`;
+} */
+// async function readSap(sapPath, requestHeaders = {}) {
+function quoteODataParameter(value) {
+  if (value === null || value === undefined) {
+    return "null";
+  }
+
+  if (typeof value === 'number') {
+    return String(value);
+  }
+
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
+
+  const text = String(value);
+
+  // ISO date supplied by the iGrid JSON payload.
+  // Convert YYYY-MM-DD to OData V2 Edm.DateTime syntax.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return `datetime'${text}T00:00:00'`;
+  }
+
+  // Already an OData datetime literal.
+  if (/^datetime'[^']+'$/i.test(text)) {
+    return text;
+  }
+
+  // OData string parameter.
+  return `'${text.replace(/'/g, "''")}'`;
+}
+
+
+function buildParameterizedReadPath(sapPath, parameters = {}, query = {}) {
+  if (!sapPath || typeof sapPath !== 'string') {
+    throw Object.assign(
+      new Error('SAP read path is required.'),
+      {
+        statusCode: 400,
+        code: 'INVALID_SAP_READ_PATH'
+      }
+    );
+  }
+
+  if (!sapPath.startsWith('/')) {
+    throw Object.assign(
+      new Error('SAP read path must begin with /.'),
+      {
+        statusCode: 400,
+        code: 'INVALID_SAP_READ_PATH'
+      }
+    );
+  }
+
+  const { pathname, query: existingQuery } = splitUrl(sapPath);
+
+  let finalPath = pathname;
+
+  /*
+   * Parameterized CDS query:
+   *
+   * /QueryName/Results
+   *
+   * becomes:
+   *
+   * /QueryName(P1=value,P2=value)/Results
+   */
+  const parameterEntries =
+    parameters &&
+      typeof parameters === 'object' &&
+      !Array.isArray(parameters)
+      ? Object.entries(parameters)
+      : [];
+
+  if (parameterEntries.length > 0) {
+    const parameterString = parameterEntries
+      .map(([name, value]) => {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+          throw Object.assign(
+            new Error(`Invalid OData parameter name '${name}'.`),
+            {
+              statusCode: 400,
+              code: 'INVALID_ODATA_PARAMETER_NAME'
+            }
+          );
+        }
+
+        return `${name}=${quoteODataParameter(value)}`;
+      })
+      .join(',');
+
+    /*
+     * Most parameterized CDS OData V2 URLs expose:
+     *
+     * /QueryName/Results
+     *
+     * Insert the parameter list before /Results.
+     */
+    const resultsIndex = finalPath.indexOf('/Results');
+
+    if (resultsIndex >= 0) {
+      finalPath =
+        finalPath.slice(0, resultsIndex) +
+        `(${parameterString})` +
+        finalPath.slice(resultsIndex);
+    } else {
+      /*
+       * If /Results isn't present, assume the final path segment
+       * is the parameterized query entity itself.
+       */
+      const slashIndex = finalPath.lastIndexOf('/');
+
+      if (slashIndex <= 0) {
+        throw Object.assign(
+          new Error('Unable to construct parameterized SAP OData path.'),
+          {
+            statusCode: 400,
+            code: 'INVALID_PARAMETERIZED_READ_PATH'
+          }
+        );
+      }
+
+      finalPath =
+        finalPath.slice(0, slashIndex) +
+        finalPath.slice(slashIndex).replace(
+          /^\/([^/]+)$/,
+          `/$1(${parameterString})`
+        );
+    }
+  }
+
+  /*
+   * Add JSON query options such as:
+   *
+   * {
+   *   "$filter": "Plant eq 'HR11'",
+   *   "$top": 100
+   * }
+   */
+  const queryEntries =
+    query &&
+      typeof query === 'object' &&
+      !Array.isArray(query)
+      ? Object.entries(query)
+      : [];
+
+  let finalQuery = existingQuery;
+
+  if (queryEntries.length > 0) {
+    const queryString = new URLSearchParams();
+
+    for (const [name, value] of queryEntries) {
+      if (value === undefined || value === null) continue;
+
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          queryString.append(name, String(item));
+        }
+      } else {
+        queryString.append(name, String(value));
+      }
+    }
+
+    const encodedQuery = queryString.toString();
+
+    if (encodedQuery) {
+      finalQuery =
+        finalQuery
+          ? `${finalQuery}&${encodedQuery}`
+          : `?${encodedQuery}`;
+    }
+  }
+
+  return `${finalPath}${finalQuery}`;
+}
+async function readSap(sapPath, requestHeaders = {}, readOptions = {}) {
+  if (!sapPath || !String(sapPath).startsWith('/')) {
+    throw Object.assign(
+      new Error('SAP read path must begin with /.'),
+      {
+        statusCode: 400,
+        code: 'INVALID_SAP_READ_PATH'
+      }
+    );
+  }
+  /*
+    let targetUrl = rewriteLegacyUrl(sapPath);
+    if (!targetUrl) {
+      const { pathname, query } = splitUrl(sapPath);
+  
+      if (pathname.startsWith('/sap/')) {
+        targetUrl = pathname + query;
+      } else {
+        targetUrl = `${SAP_ODATA_V2_PREFIX}${pathname}${query}`;
+      }
+    }
+    // targetUrl = ensureJsonFormat(targetUrl);
+    */
+  const parameters = readOptions?.parameters || {};
+  const query = readOptions?.query || {};
+
+  const parameterizedPath = buildParameterizedReadPath(
+    sapPath,
+    parameters,
+    query
+  );
+
+  let targetUrl = rewriteLegacyUrl(parameterizedPath);
+
+  if (!targetUrl) {
+    const { pathname, query: queryString } =
+      splitUrl(parameterizedPath);
+
+    if (pathname.startsWith('/sap/')) {
+      targetUrl = pathname + queryString;
+    } else {
+      targetUrl =
+        `${SAP_ODATA_V2_PREFIX}${pathname}${queryString}`;
+    }
+  }
+  console.log(`[SAP-READ] GET ${sapPath} -> ${targetUrl} via '${destinationName()}'`);
+
+  const headers = {
+    ...requestHeaders,
+    accept: 'application/json'
+  };
+
+  const { destination, response } = await executeSapGet(
+    targetUrl,
+    headers
+    // requestHeaders
+  );
+
+  console.log(`[SAP-READ] SAP ${response.status} <- ${targetUrl}`);
+  /*
+   let data = response.data;
+   if (
+     data &&
+     typeof data === 'object' &&
+     data.d &&
+     Array.isArray(data.d.results)
+   ) {
+     data = {
+       results: data.d.results
+     };
+   }
+ */
+  return {
+    targetUrl,
+    destination: sanitizeDestination(destination),
+    status: response.status,
+    headers: response.headers || {},
+    data: response.data
+  };
+}
+//06-09 read update end
+async function proxyLegacy(originalUrl, method = 'GET', requestHeaders = {}, data) {
+  if (!isCompatEnabled()) throw Object.assign(new Error('iGrid compatibility proxy is disabled.'), { statusCode: 404, code: 'IGRID_COMPAT_DISABLED' });
+  const targetUrl = rewriteLegacyUrl(originalUrl);
+  if (!targetUrl) throw Object.assign(new Error(`Unsupported iGrid SAP path: ${originalUrl}`), { statusCode: 404, code: 'UNSUPPORTED_IGRID_SAP_PATH' });
+  if (!['GET', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(method)) throw Object.assign(new Error(`HTTP method ${method} is not enabled for SAP proxy writes.`), { statusCode: 405, code: 'METHOD_NOT_ALLOWED' });
+  console.log(`[IGRID-SAP-PROXY] ${method} ${originalUrl} -> ${targetUrl} via '${destinationName()}'`);
+  const { destination, response } = await executeSap(method, targetUrl, requestHeaders, data);
+  console.log(`[IGRID-SAP-PROXY] SAP ${response.status} <- ${targetUrl}`);
+  return { targetUrl, destination: sanitizeDestination(destination), status: response.status, headers: response.headers || {}, data: response.data };
+}
+
+async function proxyLegacyGet(originalUrl, requestHeaders = {}) { return proxyLegacy(originalUrl, 'GET', requestHeaders); }
+async function proxyDomain(domain, query = '', requestHeaders = {}) {
+  const cfg = catalog[domain];
+  if (!cfg) throw Object.assign(new Error(`Unknown S/4HANA domain '${domain}'.`), { statusCode: 400 });
+  const queryString = query ? (String(query).startsWith('?') ? String(query) : `?${query}`) : '';
+  const targetUrl = cfg.sapPath + queryString;
+  const { destination, response } = await executeSapGet(targetUrl, requestHeaders);
+  return { targetUrl, destination: sanitizeDestination(destination), status: response.status, headers: response.headers || {}, data: response.data };
+}
+
+const MAINT_ACTIONS = {
+  submit: 'SubmitMaintOrderForApproval', approve: 'ApproveMaintenanceOrder', reject: 'RejectMaintenanceOrder',
+  release: 'ReleaseMaintenanceOrder', schedule: 'ScheduleMaintenanceOrder', readyForScheduling: 'SetMaintOrderToReadyForSchedg',
+  dispatched: 'SetMaintOrderOpToDispatched', mainWorkCompleted: 'SetMaintOrdToMainWorkComplete',
+  technicallyCompleted: 'SetMaintOrdToTechCompleted', close: 'SetMaintOrderStatusToClosed',
+  lock: 'SetMaintOrderStatusToLocked', unlock: 'ResetMaintOrderStatusLocked'
+};
+function quoteOData(value) { return `'${String(value).replace(/'/g, "''")}'`; }
+function maintenanceActionPath(action, orderId) {
+  const fn = MAINT_ACTIONS[action];
+  if (!fn) throw Object.assign(new Error(`Unsupported maintenance-order action '${action}'.`), { statusCode: 400, code: 'UNSUPPORTED_ACTION' });
+  return `${SAP_ODATA_V2_PREFIX}/API_MAINTENANCEORDER/${fn}?MaintenanceOrder=${quoteOData(orderId)}`;
+}
+async function getMaintenanceOrder(orderId) {
+  const targetUrl = `${SAP_ODATA_V2_PREFIX}/API_MAINTENANCEORDER/MaintenanceOrder(${quoteOData(orderId)})`;
+  return executeSapGet(targetUrl, { accept: 'application/json' });
+}
+async function maintenanceAction(action, orderId, requestHeaders = {}) {
+  const current = await getMaintenanceOrder(orderId);
+  const etag = requestHeaders['if-match'] || current.response.headers?.etag || current.response.headers?.ETag;
+  const headers = { ...requestHeaders };
+  if (etag) headers['if-match'] = etag;
+  else if (current.response.data?.d?.LastChangeDateTime) headers['if-match'] = current.response.data.d.LastChangeDateTime;
+  else throw Object.assign(new Error('SAP requires If-Match for this maintenance-order action. Read the order first and provide the returned ETag/LastChangeDateTime.'), { statusCode: 428, code: 'ETAG_REQUIRED' });
+  const targetUrl = maintenanceActionPath(action, orderId);
+  const { destination, response } = await executeSap('POST', targetUrl, headers);
+  return { targetUrl, destination: sanitizeDestination(destination), status: response.status, headers: response.headers || {}, data: response.data, action, orderId, previous: current.response.data };
+}
+
+async function testConnection() {
+  const result = { ok: false, destinationName: destinationName(), requestTimeoutMs: requestTimeoutMs(), bindings: bindingSummary(), destination: null, checks: [] };
+  try {
+    const destination = await resolveDestination(); result.destination = sanitizeDestination(destination);
+    result.checks.push({ name: 'destination-resolution', ok: true });
+    const onPremise = String(result.destination?.proxyType || '').toLowerCase() === 'onpremise';
+    result.checks.push({ name: 'on-premise-routing', ok: onPremise, detail: `ProxyType=${result.destination?.proxyType || 'unknown'}` });
+    if (!onPremise) throw Object.assign(new Error('Destination must use ProxyType=OnPremise.'), { statusCode: 502 });
+    const meta = await executeHttpRequestSdk()(destination, { method: 'GET', url: metadataPath(), timeout: requestTimeoutMs(), headers: { Accept: 'application/xml,text/xml,*/*' } }, { fetchCsrfToken: false });
+    result.checks.push({ name: 'metadata', ok: meta.status >= 200 && meta.status < 300, httpStatus: meta.status, path: metadataPath() });
+    const probe = await executeHttpRequestSdk()(destination, { method: 'GET', url: dataProbePath(), timeout: requestTimeoutMs(), headers: { Accept: 'application/json' } }, { fetchCsrfToken: false });
+    result.checks.push({ name: 'data-probe', ok: probe.status >= 200 && probe.status < 300, httpStatus: probe.status, path: dataProbePath() });
+    result.ok = result.checks.every(check => check.ok);
+    result.message = result.ok ? 'CAP reached on-premise S/4HANA through Destination + Connectivity + Cloud Connector.' : 'One or more SAP connectivity checks failed.';
+  } catch (err) {
+    result.error = { status: err?.response?.status || err?.statusCode || null, code: err?.code || null, message: String(err?.response?.data?.error?.message?.value || err?.message || err) };
+    result.message = 'SAP connectivity test failed.';
+  }
+  return result;
+}
+function getStatus() { return { ok: true, architecture: 'proxy-with-writes', mapping: 'none-in-cap', insertion: 'sap-write-through-when-api-supported', destinationName: destinationName(), message: 'SAP write-capable proxy is configured; SAP itself enforces API authorizations and business rules.' }; }
+
+module.exports = {
+  catalog, supportedPrefixes, isCompatEnabled, getStatus, proxyLegacyGet, proxyLegacy, proxyDomain, readSap, testConnection,
+  maintenanceAction, MAINT_ACTIONS, maintenanceActionPath, rewriteLegacyUrl
+};

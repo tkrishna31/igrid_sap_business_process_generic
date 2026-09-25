@@ -1,0 +1,224 @@
+'use strict';
+
+const cds = require('@sap/cds');
+const express = require('express');
+const proxy = require('./srv/lib/sap-proxy');
+
+function requireTechnicalClient(req, res, next) {
+  if (process.env.NODE_ENV !== 'production') return next();
+  const user = cds.context?.user;
+  if (!user || !user.is?.('system-user')) return res.status(403).json({ ok: false, error: 'Technical OAuth client required. Use client_credentials from the XSUAA instance bound to this CAP application.' });
+  next();
+}
+function copyResponseHeaders(res, headers = {}) {
+  const allowed = ['content-type', 'odata-version', 'dataserviceversion', 'etag', 'sap-message', 'location'];
+  for (const key of allowed) {
+    const value = headers[key] ?? headers[key.toLowerCase()] ?? headers[key.toUpperCase()];
+    if (value !== undefined) res.set(key, String(value));
+  }
+}
+function sendRaw(res, result) {
+  copyResponseHeaders(res, result.headers);
+  res.set('x-igrid-cap-proxy', result.status >= 200 && result.status < 300 ? 'sap-write-through' : 'sap-downstream-response');
+  if (result.data === undefined || result.data === null) return res.status(result.status).end();
+  if (Buffer.isBuffer(result.data) || typeof result.data === 'string') return res.status(result.status).send(result.data);
+  return res.status(result.status).json(result.data);
+}
+function sendDownstreamError(res, err, requestPath) {
+  const status = err?.response?.status || err?.statusCode || 502;
+  const headers = err?.response?.headers || {};
+  const data = err?.response?.data;
+  copyResponseHeaders(res, headers);
+  res.set('x-igrid-cap-proxy', 'sap-downstream-error');
+  if (data !== undefined && data !== null) return Buffer.isBuffer(data) || typeof data === 'string' ? res.status(status).send(data) : res.status(status).json(data);
+  return res.status(status).json({ ok: false, error: String(err?.message || err), code: err?.code || null, path: requestPath });
+}
+
+async function compatibilityHandler(req, res) {
+  if (!['GET', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) return res.status(405).json({ ok: false, error: `HTTP method ${req.method} is not enabled.` });
+  try { return sendRaw(res, await proxy.proxyLegacy(req.originalUrl, req.method, req.headers, req.body)); }
+  catch (err) { return sendDownstreamError(res, err, req.originalUrl); }
+}
+
+cds.on('bootstrap', app => {
+  app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb', strict: false }));
+  if (proxy.isCompatEnabled()) for (const prefix of proxy.supportedPrefixes()) app.use(prefix, ...cds.middlewares.before, requireTechnicalClient, compatibilityHandler);
+
+  const router = express.Router();
+  router.get('/status', (_req, res) => res.json(proxy.getStatus()));
+  router.post('/test', async (_req, res) => { const result = await proxy.testConnection(); res.status(result.ok ? 200 : (result.error?.status || 502)).json(result); });
+  router.get('/routes', (_req, res) => res.json({ ok: true, mapping: 'none-in-cap', writeThrough: true, domains: proxy.catalog, compatibilityPrefixes: proxy.supportedPrefixes(), maintenanceOrderActions: Object.keys(proxy.MAINT_ACTIONS) }));
+  router.get('/raw/:domain', async (req, res) => { try { const q = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : ''; return sendRaw(res, await proxy.proxyDomain(req.params.domain, q, req.headers)); } catch (err) { return sendDownstreamError(res, err, req.originalUrl); } });
+  // 05-09 update 
+  function normalizeSapReadPath(sapPath) {
+    if (!sapPath || typeof sapPath !== 'string') {
+      throw Object.assign(
+        new Error('SAP read path is required.'),
+        {
+          statusCode: 400,
+          code: 'INVALID_SAP_READ_PATH'
+        }
+      );
+    }
+
+    if (!sapPath.startsWith('/')) {
+      throw Object.assign(
+        new Error('SAP read path must begin with /.'),
+        {
+          statusCode: 400,
+          code: 'INVALID_SAP_READ_PATH'
+        }
+      );
+    }
+
+    // Already a complete SAP OData path.
+    if (sapPath.startsWith('/sap/')) {
+      return sapPath;
+    }
+
+    // SAP-relative service path.
+    return `/sap/opu/odata/sap${sapPath}`;
+  }
+
+  // async function sapReadHandler(req, res, sapPath) {
+  //   try {
+  //     const normalizedPath = normalizeSapReadPath(sapPath);
+
+  //     return sendRaw(
+  //       res,
+  //       await proxy.readSap(normalizedPath, req.headers)
+  //     );
+  //   } catch (err) {
+  //     return sendDownstreamError(
+  //       res,
+  //       err,
+  //       req.originalUrl
+  //     );
+  //   }
+  // }
+
+  async function sapReadHandler(req, res, sapPath) {
+    try {
+      return sendRaw(
+        res,
+        await proxy.readSap(sapPath, req.headers)
+      );
+    } catch (err) {
+      return sendDownstreamError(
+        res,
+        err,
+        req.originalUrl
+      );
+    }
+  }
+  router.get('/read', async (req, res) => {
+    try {
+      const pathValue = req.query?.path;
+
+      if (!pathValue || typeof pathValue !== 'string') {
+        return res.status(400).json({
+          ok: false,
+          error: 'Query parameter path is required.',
+          example:
+            '/api/sap/read?path=/API_MAINTENANCEORDER/MaintenanceOrder?$top=25'
+        });
+      }
+
+      /*
+       * Preserve the complete SAP OData query string.
+       */
+      let sapPath = pathValue;
+
+      const originalUrl = req.originalUrl;
+      const queryIndex = originalUrl.indexOf('?');
+
+      if (queryIndex >= 0) {
+        const rawQuery = originalUrl.slice(queryIndex + 1);
+
+        if (rawQuery.startsWith('path=')) {
+          try {
+            const decodedPath = decodeURIComponent(
+              rawQuery.slice('path='.length)
+            );
+
+            if (decodedPath.startsWith('/')) {
+              sapPath = decodedPath;
+            }
+          } catch {
+            return res.status(400).json({
+              ok: false,
+              error: 'Invalid URL encoding in path.'
+            });
+          }
+        }
+      }
+
+      return sapReadHandler(req, res, sapPath);
+
+    } catch (err) {
+      return sendDownstreamError(
+        res,
+        err,
+        req.originalUrl
+      );
+    }
+  });
+
+  router.use('/read', async (req, res, next) => {
+    if (req.method !== 'GET') {
+      return res.status(405).json({
+        ok: false,
+        error: `HTTP method ${req.method} is not enabled for SAP read.`
+      });
+    }
+
+    const prefix = '/api/sap/read';
+    const originalUrl = req.originalUrl;
+
+    const queryIndex = originalUrl.indexOf('?');
+
+    const pathWithoutQuery =
+      queryIndex >= 0
+        ? originalUrl.slice(0, queryIndex)
+        : originalUrl;
+
+    const query =
+      queryIndex >= 0
+        ? originalUrl.slice(queryIndex)
+        : '';
+
+    const sapPath =
+      pathWithoutQuery.slice(prefix.length) + query;
+
+    // Let GET /read handle the query-parameter version.
+    if (!sapPath || sapPath === '/') {
+      return next();
+    }
+
+    return sapReadHandler(req, res, sapPath);
+  });
+  // 05-09 update  end
+  // Explicit, safe maintenance-order business actions. The proxy reads the current order,
+  // obtains the current ETag, then calls SAP's action function. SAP enforces its own rules.
+  router.post('/maintenance-orders/:id/:action', async (req, res) => {
+    try { return sendRaw(res, await proxy.maintenanceAction(req.params.action, req.params.id, req.headers)); }
+    catch (err) { return sendDownstreamError(res, err, req.originalUrl); }
+  });
+
+  // Generic write-through endpoint for supported SAP OData paths when the Portal needs
+  // create/update/delete on a domain entity. The SAP API, not this gateway, determines
+  // whether a particular entity/method is supported.
+  router.post('/write', async (req, res) => {
+    try {
+      const pathValue = req.body?.path;
+      const method = String(req.body?.method || 'PATCH').toUpperCase();
+      const payload = req.body?.data;
+      if (!pathValue || !String(pathValue).startsWith('/')) return res.status(400).json({ ok: false, error: 'body.path must be a SAP-relative iGrid path beginning with /.' });
+      if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(method)) return res.status(400).json({ ok: false, error: 'method must be POST, PATCH, PUT or DELETE.' });
+      return sendRaw(res, await proxy.proxyLegacy(pathValue, method, req.headers, payload));
+    } catch (err) { return sendDownstreamError(res, err, req.originalUrl); }
+  });
+
+  app.use('/api/sap', ...cds.middlewares.before, requireTechnicalClient, router);
+});
+module.exports = cds.server;

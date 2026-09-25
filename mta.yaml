@@ -1,0 +1,70 @@
+_schema-version: 3.3.0
+ID: igrid-sap-cap-integration
+version: 6.0.0
+description: "SAP CAP gateway for the existing iGrid Portal via BTP Destination + Cloud Connector"
+parameters:
+  enable-parallel-deployments: true
+
+build-parameters:
+  before-all:
+    - builder: custom
+      commands:
+        - npm ci
+        - npx cds build --production
+        - mkdir -p gen/srv/config gen/srv/scripts
+        - cp -R config/. gen/srv/config/
+        - cp -R scripts/. gen/srv/scripts/
+
+modules:
+  # Keep the existing module/app name so an MTA upgrade preserves the CAP route
+  # already saved in the iGrid Portal baseUrl.
+  - name: igrid-sap-cap-integration-srv
+    type: nodejs
+    path: gen/srv
+    parameters:
+      instances: 1
+      buildpack: nodejs_buildpack
+    build-parameters:
+      builder: npm-ci
+    properties:
+      NODE_ENV: production
+      SAP_DESTINATION: ABAP_TOOL_CC
+      SAP_HTTP_TIMEOUT_MS: 45000
+      IGRID_COMPAT_PROXY: true
+      SAP_NOTIFICATION_LEGACY_BASE: /sap/opu/odata/sap/API_MAINTNOTIFICATION
+    provides:
+      - name: srv-api
+        properties:
+          srv-url: ${default-url}
+    requires:
+      - name: igrid-sap-cap-integration-auth
+      - name: igrid-sap-cap-integration-destination
+      - name: igrid-sap-cap-integration-connectivity
+
+resources:
+  # Keep the existing managed-service names so the upgrade can reuse them.
+  - name: igrid-sap-cap-integration-auth
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: xsuaa
+      service-plan: application
+      path: ./xs-security.json
+      config:
+        xsappname: igrid-sap-cap-integration-${org}-${space}
+        tenant-mode: dedicated
+        oauth2-configuration:
+          credential-types:
+            - binding-secret
+            - x509
+
+  - name: igrid-sap-cap-integration-destination
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: destination
+      service-plan: lite
+
+  - name: igrid-sap-cap-integration-connectivity
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: connectivity
+      service-plan: lite

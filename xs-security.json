@@ -1,0 +1,8 @@
+{
+  "xsappname": "igrid-sap-cap-integration",
+  "tenant-mode": "dedicated",
+  "description": "Machine-to-machine XSUAA protection for the iGrid SAP CAP proxy",
+  "scopes": [],
+  "attributes": [],
+  "role-templates": []
+}

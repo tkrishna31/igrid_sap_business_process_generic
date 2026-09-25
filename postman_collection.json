@@ -1,0 +1,96 @@
+{
+  "info": {
+    "name": "iGrid SAP CAP Proxy v5",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "capUrl", "value": "https://<CAP-ROUTE>" },
+    { "key": "token", "value": "<BEARER-TOKEN>" }
+  ],
+  "item": [
+    {
+      "name": "CAP Status",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": "{{capUrl}}/api/sap/status"
+      }
+    },
+    {
+      "name": "CAP -> SAP Test",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{}" },
+        "url": "{{capUrl}}/api/sap/test"
+      }
+    },
+    {
+      "name": "Maintenance Order metadata (iGrid-compatible)",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": "{{capUrl}}/API_MAINTENANCEORDER/$metadata"
+      }
+    },
+    {
+      "name": "Work Orders raw",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": "{{capUrl}}/API_MAINTENANCEORDER/MaintenanceOrder?$top=25&$format=json"
+      }
+    },
+    {
+      "name": "Notifications raw",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": "{{capUrl}}/api_maintnotification/srvd_a2x/sap/maintenancenotification/0001/MaintenanceNotification?$top=25&$format=json"
+      }
+    },
+    {
+      "name": "Assets raw",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": "{{capUrl}}/API_EQUIPMENT/Equipment?$top=25&$format=json"
+      }
+    },
+    {
+      "name": "Inventory raw",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": "{{capUrl}}/API_MATERIAL_STOCK_SRV/A_MatlStkInAcctMod?$top=25&$format=json"
+      }
+    },
+    {
+      "name": "Invoices raw",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": "{{capUrl}}/API_SUPPLIERINVOICE_PROCESS_SRV/A_SupplierInvoice?$top=25&$format=json"
+      }
+    },
+    {
+      "name": "Timesheets raw",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": "{{capUrl}}/API_MANAGE_WORKFORCE_TIMESHEET/TimeSheetEntryCollection?$top=25&$format=json"
+      }
+    },
+    {
+      "name": "Service Requests raw",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": "{{capUrl}}/API_SERVICE_REQUEST_SRV/A_ServiceRequest?$top=25&$format=json"
+      }
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+# Existing BTP destination expected by this project
+Name=ABAP_TOOL_CC
+Type=HTTP
+ProxyType=OnPremise
+URL=http://mtsap:8000
+Authentication=BasicAuthentication
+
+# Username/password belong in BTP Destination configuration, NOT in source code.
+# Keep the existing Cloud Connector virtual host/resource mapping.

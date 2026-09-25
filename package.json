@@ -1,0 +1,41 @@
+{
+  "name": "igrid-sap-cap-integration",
+  "version": "6.0.0",
+  "private": true,
+  "description": "iGrid SAP CAP gateway with raw reads plus SAP write-through and maintenance-order status actions",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "start": "cds-serve",
+    "watch": "cds watch",
+    "test": "node --test test/*.test.js",
+    "check": "node --check server.js && node --check srv/igrid-sap-proxy.js && node --check srv/lib/sap-proxy.js && node --test test/*.test.js",
+    "btp:bindings": "node scripts/check-btp-bindings.js"
+  },
+  "dependencies": {
+    "@cap-js/hana": "^3.1.0",
+    "@sap-cloud-sdk/connectivity": "4.8.0",
+    "@sap-cloud-sdk/http-client": "4.8.0",
+    "@sap/cds": "^10.0.6",
+    "@sap/xssec": "^4.8.0",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@sap/cds-dk": "^10.0.0"
+  },
+  "cds": {
+    "requires": {
+      "auth": {
+        "kind": "xsuaa",
+        "[development]": {
+          "kind": "dummy"
+        },
+        "[hybrid]": {
+          "kind": "dummy"
+        }
+      }
+    }
+  }
+}

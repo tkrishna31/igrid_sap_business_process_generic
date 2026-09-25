@@ -1,0 +1,36 @@
+@svc =http://localhost:4004
+###
+POST {{svc}}/api/sap/write
+Content-Type: application/json
+
+{
+    "method":"POST",
+    "path":"/API_PURCHASEREQ_PROCESS_SRV/A_PurchaseRequisitionHeader",
+    "data":{
+  "PurchaseRequisitionType": "NB",
+  "to_PurchaseReqnItem": [
+    {
+      "Material": "61052",
+    "Plant": "HR11",
+    "RequestedQuantity": "10",
+    "PurchasingGroup": "001",
+    "AccountAssignmentCategory": "U",
+    "PurchasingDocumentItemCategory":"0",
+    "BaseUnit": "EA"
+    }
+  ]
+}
+}
+
+
+###
+GET {{svc}}/api/sap/read/API_MAINTENANCEORDER/MaintenanceOrder?$top=1
+Content-Type: application/json
+###
+GET {{svc}}/api/sap/read/API_COMMITMENTITEM/$metadata
+Content-Type: application/json
+
+###
+POST {{svc}}/odata/v4/igrid-sap-proxy/testSapConnection
+###
+POST {{svc}}/odata/v4/igrid-sap-proxy/testSapConnectionResolved

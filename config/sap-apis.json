@@ -1,0 +1,38 @@
+{
+  "work_orders": {
+    "api": "API_MAINTENANCEORDER",
+    "incomingPath": "/API_MAINTENANCEORDER/MaintenanceOrder",
+    "sapPath": "/sap/opu/odata/sap/API_MAINTENANCEORDER/MaintenanceOrder"
+  },
+  "notifications": {
+    "api": "API_MAINTNOTIFICATION",
+    "incomingPath": "/api_maintnotification/srvd_a2x/sap/maintenancenotification/0001/MaintenanceNotification",
+    "sapPath": "/sap/opu/odata/sap/API_MAINTNOTIFICATION/MaintenanceNotification",
+    "note": "The current iGrid catalog uses the A2X-style incoming path; CAP rewrites it to the working V2 service by default."
+  },
+  "assets": {
+    "api": "API_EQUIPMENT",
+    "incomingPath": "/API_EQUIPMENT/Equipment",
+    "sapPath": "/sap/opu/odata/sap/API_EQUIPMENT/Equipment"
+  },
+  "inventory": {
+    "api": "API_MATERIAL_STOCK_SRV",
+    "incomingPath": "/API_MATERIAL_STOCK_SRV/A_MatlStkInAcctMod",
+    "sapPath": "/sap/opu/odata/sap/API_MATERIAL_STOCK_SRV/A_MatlStkInAcctMod"
+  },
+  "invoices": {
+    "api": "API_SUPPLIERINVOICE_PROCESS_SRV",
+    "incomingPath": "/API_SUPPLIERINVOICE_PROCESS_SRV/A_SupplierInvoice",
+    "sapPath": "/sap/opu/odata/sap/API_SUPPLIERINVOICE_PROCESS_SRV/A_SupplierInvoice"
+  },
+  "timesheets": {
+    "api": "API_MANAGE_WORKFORCE_TIMESHEET",
+    "incomingPath": "/API_MANAGE_WORKFORCE_TIMESHEET/TimeSheetEntryCollection",
+    "sapPath": "/sap/opu/odata/sap/API_MANAGE_WORKFORCE_TIMESHEET/TimeSheetEntryCollection"
+  },
+  "service_requests": {
+    "api": "API_SERVICE_REQUEST_SRV",
+    "incomingPath": "/API_SERVICE_REQUEST_SRV/A_ServiceRequest",
+    "sapPath": "/sap/opu/odata/sap/API_SERVICE_REQUEST_SRV/A_ServiceRequest"
+  }
+}

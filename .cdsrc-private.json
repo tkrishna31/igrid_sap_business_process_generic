@@ -1,0 +1,58 @@
+{
+  "requires": {
+    "[hybrid]": {
+      "db": {
+        "binding": {
+          "type": "cf",
+          "apiEndpoint": "https://api.cf.us10-001.hana.ondemand.com",
+          "org": "14334929trial",
+          "space": "dev",
+          "instance": "igrid-sap-cap-integration-db"
+        },
+        "kind": "hana",
+        "vcap": {
+          "name": "db"
+        }
+      },
+      "auth": {
+        "binding": {
+          "type": "cf",
+          "apiEndpoint": "https://api.cf.us10-001.hana.ondemand.com",
+          "org": "14334929trial",
+          "space": "dev",
+          "instance": "igrid-sap-cap-integration-auth"
+        },
+        "kind": "xsuaa-auth",
+        "vcap": {
+          "name": "auth"
+        }
+      },
+      "destination": {
+        "binding": {
+          "type": "cf",
+          "apiEndpoint": "https://api.cf.us10-001.hana.ondemand.com",
+          "org": "14334929trial",
+          "space": "dev",
+          "instance": "igrid-sap-cap-integration-destination"
+        },
+        "kind": "destination",
+        "vcap": {
+          "name": "destination"
+        }
+      },
+      "connectivity": {
+        "binding": {
+          "type": "cf",
+          "apiEndpoint": "https://api.cf.us10-001.hana.ondemand.com",
+          "org": "14334929trial",
+          "space": "dev",
+          "instance": "igrid-sap-cap-integration-connectivity"
+        },
+        "kind": "connectivity",
+        "vcap": {
+          "name": "connectivity"
+        }
+      }
+    }
+  }
+}
